@@ -7,7 +7,7 @@
 #     "httpx",
 #     "numpy",
 #     "scipy",
-#     "sklearn",
+#     "scikit-learn",
 #     "tabulate"
 # ]
 # ///
