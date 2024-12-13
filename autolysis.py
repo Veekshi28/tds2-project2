@@ -19,8 +19,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import httpx
-from scipy.stats import zscore
+from scipy.stats import zscore, pearsonr
 from sklearn.cluster import KMeans
+from sklearn.linear_model import LinearRegression
 from tabulate import tabulate
 
 # API Configuration
@@ -29,9 +30,6 @@ ACCESS_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6IjIyZjMwMDA0NDhAZHMuc3R1ZHkuaWl
 
 # Retry logic for API calls
 def query_llm(messages, retries=3):
-    """
-    Query the LLM API with retry logic for robustness and token validation.
-    """
     if not ACCESS_TOKEN:
         print("Error: AIPROXY_TOKEN is not set. Please set it as an environment variable.")
         sys.exit(1)
@@ -60,9 +58,6 @@ def query_llm(messages, retries=3):
 
 # Load dataset
 def load_data(file_path):
-    """
-    Load the dataset from the specified file path.
-    """
     print(f"Attempting to load dataset from {file_path}...")
     try:
         data = pd.read_csv(file_path, encoding="latin1")
@@ -75,36 +70,22 @@ def load_data(file_path):
 
 # Perform advanced analysis
 def perform_analysis(df):
-    """
-    Perform exploratory data analysis including summary statistics,
-    missing value counts, correlation matrix, and outlier detection.
-    """
     print("Performing analysis...")
     summary = df.describe(include="all").to_string()
     missing_values = df.isnull().sum().to_string()
 
-    # Select numeric columns for specific analyses
     numeric_cols = df.select_dtypes(include=[np.number])
-    if numeric_cols.empty:
-        correlations = pd.DataFrame()
-        outliers = pd.DataFrame()
-        clusters = None
-    else:
-        correlations = numeric_cols.corr()
-        outliers = numeric_cols.apply(lambda x: x[(x - x.mean()).abs() > 3 * x.std()])
-        clusters = cluster_analysis(numeric_cols)
+    correlations = numeric_cols.corr() if not numeric_cols.empty else pd.DataFrame()
+    outliers = numeric_cols.apply(lambda x: x[(x - x.mean()).abs() > 3 * x.std()]) if not numeric_cols.empty else pd.DataFrame()
+    clusters = cluster_analysis(numeric_cols)
 
     return summary, missing_values, correlations, outliers, clusters
 
 # Clustering analysis
 def cluster_analysis(numeric_cols):
-    """
-    Perform KMeans clustering on standardized numeric data.
-    """
     print("Performing clustering analysis...")
     scaler = numeric_cols.apply(zscore).dropna()
 
-    # Ensure enough data for clustering
     if scaler.shape[0] == 0:
         print("Warning: No data available for clustering.")
         return None
@@ -115,9 +96,6 @@ def cluster_analysis(numeric_cols):
 
 # Create visualizations
 def create_visualizations(df, correlations, clusters):
-    """
-    Generate visualizations including heatmaps, histograms, pairplots, and cluster plots.
-    """
     print("Creating visualizations...")
     charts = []
 
@@ -134,7 +112,7 @@ def create_visualizations(df, correlations, clusters):
 
     numeric_cols = df.select_dtypes(include=[np.number])
     if not numeric_cols.empty:
-        for col in numeric_cols.columns[:3]:
+        for col in numeric_cols.columns[:10]:
             plt.figure(figsize=(8, 6))
             sns.histplot(numeric_cols[col].dropna(), kde=True, bins=30, color="skyblue")
             plt.title(f"Distribution of {col}")
@@ -145,7 +123,6 @@ def create_visualizations(df, correlations, clusters):
             charts.append(hist_file)
             plt.close()
 
-        # Pairplot for numeric data
         if numeric_cols.shape[1] > 1:
             sns.pairplot(df, vars=numeric_cols.columns[:3], diag_kind="kde")
             pairplot_file = "pairplot.png"
@@ -168,9 +145,6 @@ def create_visualizations(df, correlations, clusters):
 
 # Generate narrative from analysis
 def generate_narrative(file_name, summary, missing_values, correlations, clusters):
-    """
-    Use the LLM to generate a narrative about the dataset based on analysis results.
-    """
     print("Generating narrative from analysis...")
     cluster_summary = clusters.value_counts().to_string() if clusters is not None else "No clustering performed."
     messages = [
@@ -181,9 +155,6 @@ def generate_narrative(file_name, summary, missing_values, correlations, cluster
 
 # Generate README.md
 def save_report(file_name, narrative, charts):
-    """
-    Save the analysis narrative and visualizations into a README.md file.
-    """
     print("Saving analysis report...")
     with open("README.md", "w") as f:
         f.write(f"# Analysis Report\n\n## Dataset: {file_name}\n\n## Insights\n{narrative}\n\n## Visualizations\n\n")
@@ -192,9 +163,6 @@ def save_report(file_name, narrative, charts):
 
 # Main function
 def main():
-    """
-    Main execution flow for loading data, performing analysis, generating visualizations, and saving the report.
-    """
     if len(sys.argv) != 2:
         print("Usage: uv run autolysis.py <dataset.csv>")
         sys.exit(1)
