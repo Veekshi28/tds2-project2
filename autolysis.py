@@ -64,10 +64,17 @@ def load_data(file_path):
 
 # Perform advanced analysis
 def perform_analysis(df):
-    summary = df.describe(include="all").to_string()
+    summary = df.describe(include="all", datetime_is_numeric=False).to_string()
     missing_values = df.isnull().sum().to_string()
-    correlations = df.corr()
-    outliers = df.select_dtypes(include=[np.number]).apply(lambda x: x[(x - x.mean()).abs() > 3 * x.std()])
+    numeric_cols = df.select_dtypes(include=[np.number])
+
+    if numeric_cols.empty:
+        correlations = pd.DataFrame()
+    else:
+        correlations = numeric_cols.corr()
+
+    outliers = numeric_cols.apply(lambda x: x[(x - x.mean()).abs() > 3 * x.std()]) if not numeric_cols.empty else pd.DataFrame()
+
     return summary, missing_values, correlations, outliers
 
 # Create visualizations
