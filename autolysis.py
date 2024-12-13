@@ -64,7 +64,7 @@ def load_data(file_path):
 
 # Perform advanced analysis
 def perform_analysis(df):
-    summary = df.describe(include="all", datetime_is_numeric=True).to_string()
+    summary = df.describe(include="all").to_string()
     missing_values = df.isnull().sum().to_string()
     correlations = df.corr()
     outliers = df.select_dtypes(include=[np.number]).apply(lambda x: x[(x - x.mean()).abs() > 3 * x.std()])
@@ -77,8 +77,10 @@ def create_visualizations(df, correlations):
     if not correlations.empty:
         plt.figure(figsize=(12, 8))
         sns.heatmap(correlations, annot=True, cmap="coolwarm", fmt=".2f")
-        heatmap_file = "correlation_heatmap.png"
         plt.title("Correlation Heatmap")
+        plt.xlabel("Features")
+        plt.ylabel("Features")
+        heatmap_file = "correlation_heatmap.png"
         plt.savefig(heatmap_file)
         charts.append(heatmap_file)
         plt.close()
@@ -88,8 +90,10 @@ def create_visualizations(df, correlations):
         for col in numeric_cols.columns[:3]:
             plt.figure(figsize=(8, 6))
             sns.histplot(numeric_cols[col].dropna(), kde=True, bins=30, color="skyblue")
-            hist_file = f"{col}_distribution.png"
             plt.title(f"Distribution of {col}")
+            plt.xlabel(col)
+            plt.ylabel("Frequency")
+            hist_file = f"{col}_distribution.png"
             plt.savefig(hist_file)
             charts.append(hist_file)
             plt.close()
@@ -107,7 +111,7 @@ def generate_narrative(file_name, summary, missing_values, correlations):
 # Generate README.md
 def save_report(file_name, narrative, charts):
     with open("README.md", "w") as f:
-        f.write(f"# Analysis Report\n\n## Dataset: {file_name}\n\n{narrative}\n\n## Visualizations\n\n")
+        f.write(f"# Analysis Report\n\n## Dataset: {file_name}\n\n## Insights\n{narrative}\n\n## Visualizations\n\n")
         for chart in charts:
             f.write(f"![{chart}]({chart})\n")
 
