@@ -4,9 +4,11 @@
 #     "pandas",
 #     "matplotlib",
 #     "seaborn",
-#     "openai",
 #     "httpx",
-#     "numpy"
+#     "numpy",
+#     "scipy",
+#     "sklearn",
+#     "tabulate"
 # ]
 # ///
 
@@ -17,41 +19,50 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import httpx
-import openai
+from scipy.stats import zscore
+from sklearn.cluster import KMeans
+from tabulate import tabulate
 
-# Ensure AIPROXY_TOKEN is available
-def get_ai_proxy_token():
-    token = os.environ.get("AIPROXY_TOKEN")
-    if not token:
-        raise EnvironmentError("AI Proxy Token is required but not provided. Please set it as an environment variable.")
-    return token
-
-AIPROXY_TOKEN = get_ai_proxy_token()
-openai.api_base = "https://aiproxy.sanand.workers.dev/openai/v1"
-openai.api_key = AIPROXY_TOKEN
+# API Configuration
+API_ENDPOINT = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
+ACCESS_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6IjIyZjMwMDA0NDhAZHMuc3R1ZHkuaWl0bS5hYy5pbiJ9.poWui37OxCs-EgxkK0_i382_ckWLbW_8xdrIVIaUr2s"
 
 # Retry logic for API calls
 def query_llm(messages, retries=3):
-    headers = {"Authorization": f"Bearer {AIPROXY_TOKEN}"}
+    """
+    Query the LLM API with retry logic for robustness and token validation.
+    """
+    if not ACCESS_TOKEN:
+        print("Error: AIPROXY_TOKEN is not set. Please set it as an environment variable.")
+        sys.exit(1)
+
+    headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
     data = {"model": "gpt-4o-mini", "messages": messages}
     for attempt in range(retries):
         try:
             response = httpx.post(
-                f"{openai.api_base}/chat/completions",
+                API_ENDPOINT,
                 json=data,
                 headers=headers,
                 timeout=60.0,
             )
+            if response.status_code == 401:
+                print("Error: Unauthorized access. Check if your AIPROXY_TOKEN is valid.")
+                sys.exit(1)
+
             response.raise_for_status()
             return response.json()["choices"][0]["message"]["content"]
         except httpx.RequestError as e:
             if attempt < retries - 1:
                 print(f"Error: {e}. Retrying ({attempt + 1}/{retries})...")
             else:
-                raise
+                raise Exception(f"Failed after {retries} attempts. Last error: {e}")
 
 # Load dataset
 def load_data(file_path):
+    """
+    Load the dataset from the specified file path.
+    """
     print(f"Attempting to load dataset from {file_path}...")
     try:
         data = pd.read_csv(file_path, encoding="latin1")
@@ -64,21 +75,50 @@ def load_data(file_path):
 
 # Perform advanced analysis
 def perform_analysis(df):
-    summary = df.describe(include="all", datetime_is_numeric=False).to_string()
+    """
+    Perform exploratory data analysis including summary statistics,
+    missing value counts, correlation matrix, and outlier detection.
+    """
+    print("Performing analysis...")
+    summary = df.describe(include="all").to_string()
     missing_values = df.isnull().sum().to_string()
-    numeric_cols = df.select_dtypes(include=[np.number])
 
+    # Select numeric columns for specific analyses
+    numeric_cols = df.select_dtypes(include=[np.number])
     if numeric_cols.empty:
         correlations = pd.DataFrame()
+        outliers = pd.DataFrame()
+        clusters = None
     else:
         correlations = numeric_cols.corr()
+        outliers = numeric_cols.apply(lambda x: x[(x - x.mean()).abs() > 3 * x.std()])
+        clusters = cluster_analysis(numeric_cols)
 
-    outliers = numeric_cols.apply(lambda x: x[(x - x.mean()).abs() > 3 * x.std()]) if not numeric_cols.empty else pd.DataFrame()
+    return summary, missing_values, correlations, outliers, clusters
 
-    return summary, missing_values, correlations, outliers
+# Clustering analysis
+def cluster_analysis(numeric_cols):
+    """
+    Perform KMeans clustering on standardized numeric data.
+    """
+    print("Performing clustering analysis...")
+    scaler = numeric_cols.apply(zscore).dropna()
+
+    # Ensure enough data for clustering
+    if scaler.shape[0] == 0:
+        print("Warning: No data available for clustering.")
+        return None
+
+    kmeans = KMeans(n_clusters=min(3, len(scaler)), random_state=42)
+    kmeans.fit(scaler)
+    return pd.DataFrame({"Cluster": kmeans.labels_}, index=scaler.index)
 
 # Create visualizations
-def create_visualizations(df, correlations):
+def create_visualizations(df, correlations, clusters):
+    """
+    Generate visualizations including heatmaps, histograms, pairplots, and cluster plots.
+    """
+    print("Creating visualizations...")
     charts = []
 
     if not correlations.empty:
@@ -105,18 +145,46 @@ def create_visualizations(df, correlations):
             charts.append(hist_file)
             plt.close()
 
+        # Pairplot for numeric data
+        if numeric_cols.shape[1] > 1:
+            sns.pairplot(df, vars=numeric_cols.columns[:3], diag_kind="kde")
+            pairplot_file = "pairplot.png"
+            plt.savefig(pairplot_file)
+            charts.append(pairplot_file)
+            plt.close()
+
+    if clusters is not None:
+        plt.figure(figsize=(8, 6))
+        sns.scatterplot(data=clusters, x=clusters.index, y="Cluster", palette="viridis")
+        plt.title("KMeans Clustering")
+        plt.xlabel("Index")
+        plt.ylabel("Cluster Group")
+        cluster_file = "kmeans_clusters.png"
+        plt.savefig(cluster_file)
+        charts.append(cluster_file)
+        plt.close()
+
     return charts
 
 # Generate narrative from analysis
-def generate_narrative(file_name, summary, missing_values, correlations):
+def generate_narrative(file_name, summary, missing_values, correlations, clusters):
+    """
+    Use the LLM to generate a narrative about the dataset based on analysis results.
+    """
+    print("Generating narrative from analysis...")
+    cluster_summary = clusters.value_counts().to_string() if clusters is not None else "No clustering performed."
     messages = [
         {"role": "system", "content": "You are a data analysis assistant."},
-        {"role": "user", "content": f"Analyze the dataset {file_name} and provide insights.\n\nSummary:\n{summary}\n\nMissing Values:\n{missing_values}\n\nCorrelations:\n{correlations.to_string()}"},
+        {"role": "user", "content": f"Analyze the dataset {file_name} and provide insights.\n\nSummary:\n{summary}\n\nMissing Values:\n{missing_values}\n\nCorrelations:\n{correlations.to_string()}\n\nCluster Summary:\n{cluster_summary}"},
     ]
     return query_llm(messages)
 
 # Generate README.md
 def save_report(file_name, narrative, charts):
+    """
+    Save the analysis narrative and visualizations into a README.md file.
+    """
+    print("Saving analysis report...")
     with open("README.md", "w") as f:
         f.write(f"# Analysis Report\n\n## Dataset: {file_name}\n\n## Insights\n{narrative}\n\n## Visualizations\n\n")
         for chart in charts:
@@ -124,6 +192,9 @@ def save_report(file_name, narrative, charts):
 
 # Main function
 def main():
+    """
+    Main execution flow for loading data, performing analysis, generating visualizations, and saving the report.
+    """
     if len(sys.argv) != 2:
         print("Usage: uv run autolysis.py <dataset.csv>")
         sys.exit(1)
@@ -131,11 +202,11 @@ def main():
     file_name = sys.argv[1]
     df = load_data(file_name)
 
-    summary, missing_values, correlations, outliers = perform_analysis(df)
+    summary, missing_values, correlations, outliers, clusters = perform_analysis(df)
 
-    charts = create_visualizations(df, correlations)
+    charts = create_visualizations(df, correlations, clusters)
 
-    narrative = generate_narrative(file_name, summary, missing_values, correlations)
+    narrative = generate_narrative(file_name, summary, missing_values, correlations, clusters)
 
     save_report(file_name, narrative, charts)
 
