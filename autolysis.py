@@ -1,187 +1,221 @@
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.9"
 # dependencies = [
-#     "pandas",
-#     "matplotlib",
-#     "seaborn",
-#     "httpx",
-#     "numpy",
-#     "scipy",
-#     "scikit-learn",
-#     "tabulate"
+#   "pandas",
+#   "seaborn",
+#   "matplotlib",
+#   "numpy",
+#   "scipy",
+#   "openai",
+#   "scikit-learn",
+#   "requests",
+#   "ipykernel",
 # ]
 # ///
 
 import os
-import sys
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import seaborn as sns
-import httpx
-from scipy.stats import zscore, pearsonr
-from sklearn.cluster import KMeans
-from sklearn.linear_model import LinearRegression
-from tabulate import tabulate
+import matplotlib.pyplot as plt
+import argparse
+import requests
+import json
+from sklearn.ensemble import IsolationForest
+from scipy.stats import shapiro
 
-# API Configuration
-API_ENDPOINT = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
-ACCESS_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6IjIyZjMwMDA0NDhAZHMuc3R1ZHkuaWl0bS5hYy5pbiJ9.poWui37OxCs-EgxkK0_i382_ckWLbW_8xdrIVIaUr2s"
+# Constants
+API_URL = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
+HEADERS = {
+    "Content-Type": "application/json",
+    "Authorization": f"Bearer eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6IjIyZjMwMDA0NDhAZHMuc3R1ZHkuaWl0bS5hYy5pbiJ9.poWui37OxCs-EgxkK0_i382_ckWLbW_8xdrIVIaUr2s"
+}
 
-# Retry logic for API calls
-def query_llm(messages, retries=3):
-    if not ACCESS_TOKEN:
-        print("Error: AIPROXY_TOKEN is not set. Please set it as an environment variable.")
-        sys.exit(1)
+# Function to preprocess data (handle missing values)
+def preprocess_data(df):
+    numeric_cols = df.select_dtypes(include=[np.number])
+    return numeric_cols.fillna(numeric_cols.mean())
 
-    headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-    data = {"model": "gpt-4o-mini", "messages": messages}
-    for attempt in range(retries):
-        try:
-            response = httpx.post(
-                API_ENDPOINT,
-                json=data,
-                headers=headers,
-                timeout=60.0,
-            )
-            if response.status_code == 401:
-                print("Error: Unauthorized access. Check if your AIPROXY_TOKEN is valid.")
-                sys.exit(1)
+# Function to analyze the data
+def analyze_data(df):
+    print("Analyzing the data...")
+    summary_stats = df.describe()
+    missing_values = df.isnull().sum()
+    numeric_cols = df.select_dtypes(include=[np.number])
+    corr_matrix = numeric_cols.corr() if not numeric_cols.empty else pd.DataFrame()
+    print("Data analysis complete.")
+    return summary_stats, missing_values, corr_matrix
 
-            response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
-        except httpx.RequestError as e:
-            if attempt < retries - 1:
-                print(f"Error: {e}. Retrying ({attempt + 1}/{retries})...")
-            else:
-                raise Exception(f"Failed after {retries} attempts. Last error: {e}")
+# Function to detect outliers using Isolation Forest
+def detect_outliers(df):
+    numeric_cols = df.select_dtypes(include=[np.number]).dropna()
+    if numeric_cols.empty:
+        return pd.Series(dtype=int)
+    model = IsolationForest(random_state=42)
+    outlier_labels = model.fit_predict(numeric_cols)
+    outliers = pd.Series(outlier_labels == -1, index=numeric_cols.index)
+    return outliers.value_counts()
 
-# Load dataset
-def load_data(file_path):
-    print(f"Attempting to load dataset from {file_path}...")
+# Function to perform Shapiro-Wilk test for normality
+def perform_shapiro_test(df):
+    print("Performing Shapiro-Wilk normality test...")
+    shapiro_results = {}
+    numeric_cols = df.select_dtypes(include=[np.number])
+    for col in numeric_cols.columns:
+        if len(numeric_cols[col]) > 5000:
+            shapiro_results[col] = "Sample size > 5000, test might not be accurate."
+        else:
+            stat, p_value = shapiro(numeric_cols[col])
+            shapiro_results[col] = {"statistic": stat, "p_value": p_value}
+    print("Shapiro-Wilk test complete.")
+    return shapiro_results
+
+# Function to generate visualizations
+def visualize_data(df, corr_matrix, output_dir):
+    numeric_cols = df.select_dtypes(include=[np.number])
+    os.makedirs(output_dir, exist_ok=True)
+    plots = []
+
+    # Correlation Heatmap
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(corr_matrix, annot=True, cmap="coolwarm", fmt=".2f", linewidths=0.5)
+    heatmap_file = os.path.join(output_dir, "correlation_heatmap.png")
+    plt.savefig(heatmap_file)
+    plots.append(heatmap_file)
+    plt.close()
+
+    # Violin Plot
+    plt.figure(figsize=(10, 6))
+    sns.violinplot(data=numeric_cols)
+    violin_file = os.path.join(output_dir, "violin_plot.png")
+    plt.savefig(violin_file)
+    plots.append(violin_file)
+    plt.close()
+
+    # Box Plot
+    plt.figure(figsize=(10, 6))
+    sns.boxplot(data=numeric_cols)
+    boxplot_file = os.path.join(output_dir, "boxplot.png")
+    plt.savefig(boxplot_file)
+    plots.append(boxplot_file)
+    plt.close()
+
+    # KDE Plot
+    plt.figure(figsize=(10, 6))
+    sns.kdeplot(data=numeric_cols, fill=True, common_norm=False)
+    kde_file = os.path.join(output_dir, "kde_plot.png")
+    plt.savefig(kde_file)
+    plots.append(kde_file)
+    plt.close()
+
+    # Regression Plot
+    if len(numeric_cols.columns) >= 2:
+        plt.figure(figsize=(10, 6))
+        sns.regplot(x=numeric_cols.columns[0], y=numeric_cols.columns[1], data=numeric_cols)
+        regression_file = os.path.join(output_dir, "regression_plot.png")
+        plt.savefig(regression_file)
+        plots.append(regression_file)
+        plt.close()
+
+    # Distribution Plot
+    if len(numeric_cols.columns) > 0:
+        plt.figure(figsize=(10, 6))
+        sns.histplot(numeric_cols.iloc[:, 0], kde=True, bins=30)
+        distribution_file = os.path.join(output_dir, "distribution_plot.png")
+        plt.savefig(distribution_file)
+        plots.append(distribution_file)
+        plt.close()
+
+    # Scatter Plot
+    if len(numeric_cols.columns) >= 2:
+        plt.figure(figsize=(10, 6))
+        sns.scatterplot(x=numeric_cols.columns[0], y=numeric_cols.columns[1], data=numeric_cols)
+        scatter_file = os.path.join(output_dir, "scatterplot.png")
+        plt.savefig(scatter_file)
+        plots.append(scatter_file)
+        plt.close()
+
+    # Outliers Bar Plot
+    outliers = detect_outliers(df)
+    if not outliers.empty:
+        plt.figure(figsize=(10, 6))
+        outliers.plot(kind="bar", color="red")
+        outliers_file = os.path.join(output_dir, "outliers_plot.png")
+        plt.savefig(outliers_file)
+        plots.append(outliers_file)
+        plt.close()
+
+    print("Visualizations generated.")
+    return plots
+
+# Function to generate narrative using OpenAI API
+def generate_narrative(summary_stats, missing_values, corr_matrix, outliers, shapiro_results):
+    print("Generating narrative using AI...")
     try:
-        data = pd.read_csv(file_path, encoding="latin1")
-        print("Dataset loaded successfully.")
-        print(f"Dataset shape: {data.shape}")
-        return data
+        full_prompt = f"""
+        You are a data scientist. Based on the following analysis results, provide insights and recommendations:
+        - Summary Statistics: {summary_stats.to_dict()}
+        - Missing Values: {missing_values.to_dict()}
+        - Correlation Matrix: {corr_matrix.to_dict() if not corr_matrix.empty else 'No correlations detected.'}
+        - Outliers Detected: {outliers.to_dict()}
+        - Shapiro-Wilk Test Results: {shapiro_results}
+
+        Write a narrative that:
+        - Explains key findings from the data.
+        - Highlights patterns from the visualizations like normal distributions and outliers.
+        - Provides actionable insights and potential applications for the findings.
+        - Concludes with recommendations based on your analysis.
+        """
+        data = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": full_prompt}
+            ],
+            "max_tokens": 1000,
+            "temperature": 0.7
+        }
+        response = requests.post(API_URL, headers=HEADERS, data=json.dumps(data))
+        if response.status_code == 200:
+            return response.json()['choices'][0]['message']['content']
+        else:
+            print(f"Error with AI response: {response.status_code} - {response.text}")
+            return "Failed to generate narrative."
     except Exception as e:
-        print(f"Error loading dataset: {e}")
-        sys.exit(1)
+        print(f"Error in narrative generation: {e}")
+        return "Narrative generation failed."
 
-# Perform advanced analysis
-def perform_analysis(df):
-    print("Performing analysis...")
-    summary = df.describe(include="all").to_string()
-    missing_values = df.isnull().sum().to_string()
-
-    numeric_cols = df.select_dtypes(include=[np.number])
-    correlations = numeric_cols.corr() if not numeric_cols.empty else pd.DataFrame()
-    outliers = numeric_cols.apply(lambda x: x[(x - x.mean()).abs() > 3 * x.std()]) if not numeric_cols.empty else pd.DataFrame()
-    clusters = cluster_analysis(numeric_cols)
-
-    return summary, missing_values, correlations, outliers, clusters
-
-# Clustering analysis
-def cluster_analysis(numeric_cols):
-    print("Performing clustering analysis...")
-    scaler = numeric_cols.apply(zscore).dropna()
-
-    if scaler.shape[0] == 0:
-        print("Warning: No data available for clustering.")
-        return None
-
-    kmeans = KMeans(n_clusters=min(3, len(scaler)), random_state=42)
-    kmeans.fit(scaler)
-    return pd.DataFrame({"Cluster": kmeans.labels_}, index=scaler.index)
-
-# Create visualizations
-def create_visualizations(df, correlations, clusters):
-    print("Creating visualizations...")
-    charts = []
-
-    if not correlations.empty:
-        plt.figure(figsize=(12, 8))
-        sns.heatmap(correlations, annot=True, cmap="coolwarm", fmt=".2f")
-        plt.title("Correlation Heatmap")
-        plt.xlabel("Features")
-        plt.ylabel("Features")
-        heatmap_file = "correlation_heatmap.png"
-        plt.savefig(heatmap_file)
-        charts.append(heatmap_file)
-        plt.close()
-
-    numeric_cols = df.select_dtypes(include=[np.number])
-    if not numeric_cols.empty:
-        for col in numeric_cols.columns[:10]:
-            plt.figure(figsize=(8, 6))
-            sns.histplot(numeric_cols[col].dropna(), kde=True, bins=30, color="skyblue")
-            plt.title(f"Distribution of {col}")
-            plt.xlabel(col)
-            plt.ylabel("Frequency")
-            hist_file = f"{col}_distribution.png"
-            plt.savefig(hist_file)
-            charts.append(hist_file)
-            plt.close()
-
-        if numeric_cols.shape[1] > 1:
-            sns.pairplot(df, vars=numeric_cols.columns[:3], diag_kind="kde")
-            pairplot_file = "pairplot.png"
-            plt.savefig(pairplot_file)
-            charts.append(pairplot_file)
-            plt.close()
-
-    if clusters is not None:
-        plt.figure(figsize=(8, 6))
-        sns.scatterplot(data=clusters, x=clusters.index, y="Cluster", palette="viridis")
-        plt.title("KMeans Clustering")
-        plt.xlabel("Index")
-        plt.ylabel("Cluster Group")
-        cluster_file = "kmeans_clusters.png"
-        plt.savefig(cluster_file)
-        charts.append(cluster_file)
-        plt.close()
-
-    return charts
-
-# Generate narrative from analysis
-def generate_narrative(file_name, summary, missing_values, correlations, clusters):
-    print("Generating narrative from analysis...")
-    cluster_summary = clusters.value_counts().to_string() if clusters is not None else "No clustering performed."
-    messages = [
-        {"role": "system", "content": "You are a data analysis assistant."},
-        {"role": "user", "content": f"Analyze the dataset {file_name} and provide insights.\n\nSummary:\n{summary}\n\nMissing Values:\n{missing_values}\n\nCorrelations:\n{correlations.to_string()}\n\nCluster Summary:\n{cluster_summary}"},
-    ]
-    return query_llm(messages)
-
-# Generate README.md
-def save_report(file_name, narrative, charts):
-    print("Saving analysis report...")
-    with open("README.md", "w") as f:
-        f.write(f"# Analysis Report\n\n## Dataset: {file_name}\n\n## Insights\n{narrative}\n\n## Visualizations\n\n")
-        for chart in charts:
-            f.write(f"![{chart}]({chart})\n")
+# Function to create README file
+def create_readme(narrative, output_dir):
+    readme_file = os.path.join(output_dir, "README.md")
+    with open(readme_file, "w") as f:
+        f.write("# Automated Data Analysis Report\n\n")
+        f.write(narrative)
+    print(f"README file created at {readme_file}")
+    return readme_file
 
 # Main function
-def main():
-    if len(sys.argv) != 2:
-        print("Usage: uv run autolysis.py <dataset.csv>")
-        sys.exit(1)
+def main(csv_file):
+    print("Starting analysis...")
+    try:
+        df = pd.read_csv(csv_file, encoding="ISO-8859-1")
+        df = preprocess_data(df)
+        print("Missing values handled.")
 
-    file_name = sys.argv[1]
-    df = load_data(file_name)
+        summary_stats, missing_values, corr_matrix = analyze_data(df)
+        outliers = detect_outliers(df)
+        shapiro_results = perform_shapiro_test(df)
 
-    summary, missing_values, correlations, outliers, clusters = perform_analysis(df)
-
-    charts = create_visualizations(df, correlations, clusters)
-
-    narrative = generate_narrative(file_name, summary, missing_values, correlations, clusters)
-
-    save_report(file_name, narrative, charts)
-
-    print("Analysis complete. Files generated:")
-    print("- README.md")
-    for chart in charts:
-        print(f"- {chart}")
+        plots = visualize_data(df, corr_matrix, output_dir=".")
+        narrative = generate_narrative(summary_stats, missing_values, corr_matrix, outliers, shapiro_results)
+        readme_file = create_readme(narrative, output_dir=".")
+        print(f"Analysis complete! README file: {readme_file}")
+    except Exception as e:
+        print(f"Error during analysis: {e}")
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) < 2:
+        print("Usage: python autolysis.py <dataset_path>")
+        sys.exit(1)
+    main(sys.argv[1])
